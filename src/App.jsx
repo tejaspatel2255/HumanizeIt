@@ -1,128 +1,48 @@
 import { useState, useEffect } from 'react';
-
-// ============================
-// API UTILITIES (GROQ / GEMINI)
-// ============================
-
-const GEMINI_MODEL = 'gemini-2.0-flash';
-const GROQ_MODEL = 'llama-3.3-70b-versatile';
-
-const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY;
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-
-async function callGroq(systemInstruction, userMessage, apiKey, maxTokens = 1500) {
-  if (!apiKey) throw new Error('Please enter your Groq API key first');
-  const url = 'https://api.groq.com/openai/v1/chat/completions';
-  const payload = {
-    model: GROQ_MODEL,
-    messages: [
-      { role: "system", content: systemInstruction },
-      { role: "user", content: userMessage }
-    ],
-    temperature: 0.9,
-    max_tokens: maxTokens
-  };
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Groq API error ${response.status}`);
-  }
-  const data = await response.json();
-  try { return data.choices[0].message.content; } 
-  catch (e) { throw new Error('Failed to parse Groq API response.'); }
-}
-
-async function callGemini(systemInstruction, userMessage, apiKey, maxTokens = 1500) {
-  if (!apiKey) throw new Error('Please enter your Gemini API key first');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-  const payload = {
-    system_instruction: { parts: [{ text: systemInstruction }] },
-    contents: [{ role: "user", parts: [{ text: userMessage }] }],
-    generationConfig: { temperature: 0.9, maxOutputTokens: maxTokens }
-  };
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    if (response.status === 429) throw new Error(`Rate limit error: ${err?.error?.message || 'Quota exceeded'}`);
-    throw new Error(err?.error?.message || `API error ${response.status}`);
-  }
-  const data = await response.json();
-  try { return data.candidates[0].content.parts[0].text; } 
-  catch (e) { throw new Error('Failed to parse Gemini API response.'); }
-}
-
-const HUMANIZE_SYSTEM = `You are an expert human writer and editor. Your job is to rewrite AI-generated text so it reads as 100% human-written and passes all AI detection tools with a 0% AI score.
-
-Follow these rules STRICTLY:
-1. SENTENCE STRUCTURE VARIATION: Mix short punchy sentences with longer, flowing ones. Vary paragraph lengths.
-2. HUMAN IMPERFECTIONS: Add natural filler transitions: "To be honest,", "Look,". Use contractions always.
-3. VOCABULARY: Replace formal AI words: "utilize" → "use", "endeavor" → "try". Avoid: "delve", "leverage".
-4. FLOW & RHYTHM: Break up long AI-style paragraphs into smaller chunks. Use em-dashes and ellipses naturally.
-5. PRESERVE INTENT: Keep all key facts, arguments, and meaning intact. Match original length.
-
-Return ONLY the rewritten text. No explanations, no preamble, no labels.`;
-
-const SCORE_SYSTEM = `You are an AI detection analysis engine mimicking top AI detectors.
-Analyze the following text and return a JSON object ONLY.
-Return this exact structure:
-{
-  "overall_ai_score": <number 0-100>,
-  "verdict": "Human Written" | "Mostly Human" | "AI Generated",
-  "detectors": {
-    "Turnitin": <number 0-100>,
-    "Copyleaks": <number 0-100>,
-    "OriginalityAI": <number 0-100>,
-    "GPTZero": <number 0-100>,
-    "Crossplag": <number 0-100>,
-    "Sapling.ai": <number 0-100>,
-    "Gowinston.ai": <number 0-100>,
-    "ZeroGPT": <number 0-100>
-  }
-}
-Make the numbers realistic. Return ONLY JSON, no markdown blocks.`;
-
-// ============================
-// HOOKS & UTILS
-// ============================
-
-function getWordCount(text) {
-  return text.trim().split(/\s+/).filter(Boolean).length;
-}
+import {
+  getWordCount,
+  hasAnyApiKey,
+  humanizeText,
+  scoreText,
+} from './lib/ai';
 
 // ============================
 // COMPONENTS
 // ============================
 
-function LoadingBar({ durationMs = 15000, isChecking = false }) {
+const HUMANIZE_STAGE_LABELS = {
+  paraphrase: '✍️ Pass 1: Deep paraphrasing (new structure & wording)...',
+  humanize: '💬 Pass 2: Adding natural human voice & rhythm...',
+  polish: '✨ Final polish: removing AI phrases...',
+};
+
+function LoadingBar({ durationMs = 22000, isChecking = false, stage = null }) {
   const messages = isChecking ? [
     "🔍 Scanning text patterns...",
-    "🛡️ Checking Turnitin & GPTZero...",
-    "📊 Running cross-plag analysis...",
-    "✅ Finalizing AI report..."
+    "🛡️ Checking burstiness & AI phrases...",
+    "📊 Running style analysis...",
+    "✅ Finalizing report..."
   ] : [
-    "🔍 Analyzing AI patterns...",
-    "✍️ Rewriting with human style...",
-    "💬 Injecting natural flow...",
-    "✅ Finalizing results..."
+    HUMANIZE_STAGE_LABELS.paraphrase,
+    HUMANIZE_STAGE_LABELS.humanize,
+    HUMANIZE_STAGE_LABELS.polish,
+    "✅ Almost done..."
   ];
   const [msgIdx, setMsgIdx] = useState(0);
 
+  const activeMessage = stage && HUMANIZE_STAGE_LABELS[stage]
+    ? HUMANIZE_STAGE_LABELS[stage]
+    : messages[msgIdx];
+
   useEffect(() => {
-    const interval = setInterval(() => setMsgIdx(i => (i + 1) % messages.length), 1500);
+    if (stage) return undefined;
+    const interval = setInterval(() => setMsgIdx(i => (i + 1) % messages.length), 2000);
     return () => clearInterval(interval);
-  }, [messages.length]);
+  }, [messages.length, stage]);
 
   return (
     <div className="loading-container">
-      <div className="loading-message font-heading">{messages[msgIdx]}</div>
+      <div className="loading-message font-heading">{activeMessage}</div>
       <div className="progress-bar-bg">
         <div className="progress-bar-fill" style={{ animationDuration: `${durationMs}ms` }} />
       </div>
@@ -170,8 +90,9 @@ export default function App() {
   const [checkLoading, setCheckLoading] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
-  
-  // Navbar scroll state
+  const [activeProvider, setActiveProvider] = useState(null);
+  const [loadingStage, setLoadingStage] = useState(null);
+
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
@@ -192,43 +113,46 @@ export default function App() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const callAIWithFallback = async (system, prompt, maxT) => {
-    try {
-      if (!GROQ_API_KEY) throw new Error("Groq API key missing");
-      return await callGroq(system, prompt, GROQ_API_KEY, maxT);
-    } catch (err) {
-      console.warn("Groq failed, falling back to Gemini:", err);
-      if (!GEMINI_API_KEY) throw new Error("Both APIs failed: " + err.message);
-      return await callGemini(system, prompt, GEMINI_API_KEY, maxT);
-    }
-  };
-
   const handleHumanize = async () => {
     if (!canSubmit) return;
+    if (!hasAnyApiKey()) {
+      setError('Add VITE_GROQ_API_KEY or VITE_GEMINI_API_KEY to your .env file, then restart the dev server.');
+      return;
+    }
+
     setLoading(true);
     setError('');
     setOutputText('');
     setScores(null);
+    setActiveProvider(null);
+    setLoadingStage('paraphrase');
+
     try {
-      const humanized = await callAIWithFallback(HUMANIZE_SYSTEM, inputText, 1500);
-      setOutputText(humanized);
+      const { text, provider } = await humanizeText(inputText, setLoadingStage);
+      setOutputText(text);
+      setActiveProvider(provider);
+      setScores(await scoreText(text));
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Humanization failed. Please try again.');
     } finally {
       setLoading(false);
+      setLoadingStage(null);
     }
   };
 
   const handleCheckAI = async () => {
     if (!outputText) return;
+    if (!hasAnyApiKey()) {
+      setError('Add an API key to your .env file to run the detection check.');
+      return;
+    }
+
     setCheckLoading(true);
     setError('');
     setScores(null);
+
     try {
-      const prompt = `TEXT TO ANALYZE:\n${outputText}`;
-      const scoreRaw = await callAIWithFallback(SCORE_SYSTEM, prompt, 800);
-      const clean = scoreRaw.replace(/```json|```/g, "").trim();
-      setScores(JSON.parse(clean));
+      setScores(await scoreText(outputText));
     } catch (err) {
       setError(err.message || 'Detection check failed.');
     } finally {
@@ -236,8 +160,8 @@ export default function App() {
     }
   };
 
-  const flaggedCount = scores ? Object.values(scores.detectors).filter(v => v > 30).length : 0;
-  const isMostlyHuman = scores && flaggedCount <= 3;
+  const flaggedCount = scores ? Object.values(scores.detectors).filter(v => v > 35).length : 0;
+  const isMostlyHuman = scores && scores.overall_ai_score <= 42;
 
   return (
     <>
@@ -327,7 +251,12 @@ export default function App() {
                   </div>
                   <div style={{ padding: 20, borderTop: '1px solid var(--card-border)' }}>
                     <button className="btn btn-primary" style={{ width: '100%', padding: '16px' }} onClick={handleHumanize} disabled={!canSubmit || loading}>
-                      {loading ? '⏳ Humanizing...' : '✨ Humanize Text'}
+                      {loading
+                        ? (loadingStage === 'paraphrase' ? '⏳ Paraphrasing...'
+                          : loadingStage === 'humanize' ? '⏳ Humanizing...'
+                          : loadingStage === 'polish' ? '⏳ Polishing...'
+                          : '⏳ Processing...')
+                        : '✨ Humanize Text'}
                     </button>
                   </div>
                </div>
@@ -342,7 +271,7 @@ export default function App() {
 
                  {loading && (
                    <div style={{ padding: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                     <LoadingBar durationMs={15000} />
+                     <LoadingBar durationMs={22000} stage={loadingStage} />
                    </div>
                  )}
 
@@ -359,7 +288,12 @@ export default function App() {
                         onChange={e => setOutputText(e.target.value)}
                       />
                       <div style={{ marginTop: 'auto', paddingTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{outputWords} words</span>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                          {outputWords} words
+                          {activeProvider && (
+                            <> · via {activeProvider === 'groq' ? 'Groq' : 'Gemini'}</>
+                          )}
+                        </span>
                         <div style={{ display: 'flex', gap: 8 }}>
                           <button className="btn btn-ghost" style={{ fontSize: '0.8rem' }} onClick={handleCopy}>
                             {copied ? '✅ Copied' : '📋 Copy'}
@@ -369,7 +303,7 @@ export default function App() {
                     </div>
                     <div style={{ padding: 20, borderTop: '1px solid var(--card-border)' }}>
                       <button className="btn btn-secondary" style={{ width: '100%', padding: '16px', color: 'var(--accent-cyan)', borderColor: 'var(--accent-cyan)' }} onClick={handleCheckAI} disabled={checkLoading}>
-                        {checkLoading ? '⏳ Checking...' : '🔍 Check for AI'}
+                        {checkLoading ? '⏳ Checking...' : '🔍 Re-scan for AI'}
                       </button>
                     </div>
                    </div>
@@ -398,7 +332,7 @@ export default function App() {
                             {scores.verdict}
                           </h3>
                           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', margin: 0 }}>
-                            {flaggedCount} of 8 detectors flagged AI.
+                            {flaggedCount} of 8 pattern checks flagged · burstiness &amp; AI-phrase scan
                           </p>
                         </div>
                       </div>
@@ -480,7 +414,7 @@ export default function App() {
             <div className="step">
               <div className="step-number font-heading">2</div>
               <h3 className="font-heading">Humanize It</h3>
-              <p>Click a button and watch our advanced AI engine rewrite your content with natural human imperfections.</p>
+              <p>Our two-pass engine deep-paraphrases then adds a natural human voice so detectors see real writing patterns.</p>
             </div>
             <div className="step">
               <div className="step-number font-heading">3</div>

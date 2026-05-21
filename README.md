@@ -57,9 +57,11 @@ Open that URL in your web browser.
 ### 6. Humanize Text!
 
 1. Paste any AI-generated text (like a ChatGPT response) into the main "AI Text Input" box.
-2. Click the **Humanize Text** button.
-3. Wait a few seconds for the AI to rewrite the text.
-4. Click the **Check for AI** button to generate a detailed AI Detection Report below the text panels.
+2. Click the **Humanize Text** button — one API call rewrites the full text (Groq first if configured, otherwise Gemini).
+3. Wait a few seconds for the humanized output to appear in the right panel.
+4. Optionally click **Check for AI** for a separate detection report (uses fewer tokens than before).
+
+You only need **one** API key (Groq or Gemini). If both are set, Groq is tried first for speed; Gemini is used automatically if Groq fails.
 
 ## Built With
 - **React** (via Vite)
